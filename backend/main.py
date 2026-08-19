@@ -12,8 +12,9 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Sophisticated Tetris Backend")
 
-# Caminho para arquivo de scores
+# Caminho para arquivo de scores (usado como fallback local)
 SCORES_FILE = os.getenv("SCORES_FILE_PATH", "scores.json")
+COLLECTION_NAME = "scores"
 
 class ScoreEntry(BaseModel):
     name: str = Field(..., min_length=1, max_length=15)
@@ -30,10 +31,24 @@ DEFAULT_SCORES = [
     {"name": "NEWBIE", "score": 5000, "level": 1, "lines": 10}
 ]
 
-def load_scores() -> List[Dict[str, Any]]:
+# Inicializa o Firestore de forma segura
+db = None
+try:
+    # Se houver um emulador rodando ou se estiver na nuvem (Cloud Run/GCP),
+    # o SDK do Google Cloud lida com as credenciais nativamente.
+    # Usamos None como padrão para que o SDK autodetecte o ID do projeto atual na nuvem.
+    from google.cloud import firestore
+    project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
+    db = firestore.Client(project=project_id)
+    logger.info(f"Firestore client successfully initialized with project: {db.project}")
+except Exception as e:
+    logger.warning(f"Could not initialize Firestore Client: {e}. Falling back to local JSON storage.")
+    db = None
+
+def load_scores_local() -> List[Dict[str, Any]]:
     if not os.path.exists(SCORES_FILE):
         logger.info("Scores file not found. Pre-populating with default scores.")
-        save_scores(DEFAULT_SCORES)
+        save_scores_local(DEFAULT_SCORES)
         return DEFAULT_SCORES
     try:
         with open(SCORES_FILE, "r", encoding="utf-8") as f:
@@ -42,18 +57,74 @@ def load_scores() -> List[Dict[str, Any]]:
         logger.error(f"Error reading scores file: {e}. Returning default scores.")
         return DEFAULT_SCORES
 
-def save_scores(scores: List[Dict[str, Any]]) -> None:
+def save_scores_local(scores: List[Dict[str, Any]]) -> None:
     try:
         with open(SCORES_FILE, "w", encoding="utf-8") as f:
             json.dump(scores, f, indent=4, ensure_ascii=False)
     except Exception as e:
         logger.error(f"Error saving scores file: {e}")
 
+def populate_default_scores_firestore() -> None:
+    if not db:
+        return
+    try:
+        col_ref = db.collection(COLLECTION_NAME)
+        batch = db.batch()
+        for entry in DEFAULT_SCORES:
+            doc_ref = col_ref.document()
+            batch.set(doc_ref, entry)
+        batch.commit()
+        logger.info("Successfully populated Firestore with default retro scores.")
+    except Exception as e:
+        logger.error(f"Failed to populate default scores in Firestore: {e}")
+
+def load_scores_from_firestore() -> List[Dict[str, Any]]:
+    if db is None:
+        return load_scores_local()
+    try:
+        col_ref = db.collection(COLLECTION_NAME)
+        # Buscar os top 10 ordenados por pontuação decrescente
+        query = col_ref.order_by("score", direction=firestore.Query.DESCENDING).limit(10)
+        docs = list(query.stream())
+        
+        if not docs:
+            logger.info("Firestore collection empty. Pre-populating with default scores.")
+            populate_default_scores_firestore()
+            docs = list(query.stream())
+            
+        return [doc.to_dict() for doc in docs]
+    except Exception as e:
+        logger.error(f"Error loading scores from Firestore: {e}. Falling back to local file.")
+        return load_scores_local()
+
+def save_score_to_firestore(entry: Dict[str, Any]) -> None:
+    if db is None:
+        # Se estiver no modo local, adiciona o score na lista local e salva
+        local_scores = load_scores_local()
+        local_scores.append(entry)
+        local_scores = sorted(local_scores, key=lambda x: x["score"], reverse=True)[:10]
+        save_scores_local(local_scores)
+        return
+    try:
+        col_ref = db.collection(COLLECTION_NAME)
+        col_ref.add(entry)
+        logger.info(f"Score for {entry['name']} successfully saved to Firestore.")
+    except Exception as e:
+        logger.error(f"Error saving score to Firestore: {e}. Saving to local fallback.")
+        # Em caso de erro temporário no Firestore, salva local também
+        try:
+            local_scores = load_scores_local()
+            local_scores.append(entry)
+            local_scores = sorted(local_scores, key=lambda x: x["score"], reverse=True)[:10]
+            save_scores_local(local_scores)
+        except Exception as local_err:
+            logger.error(f"Failed to save to local fallback: {local_err}")
+
 @app.get("/api/scores", response_model=List[Dict[str, Any]])
 def get_scores():
     """Recupera os 10 melhores placares."""
-    scores = load_scores()
-    # Ordenar por garantia e cortar nos top 10
+    scores = load_scores_from_firestore()
+    # Garante a ordenação decrescente e corta nos top 10
     scores = sorted(scores, key=lambda x: x["score"], reverse=True)[:10]
     return scores
 
@@ -61,18 +132,9 @@ def get_scores():
 def add_score(entry: ScoreEntry):
     """Adiciona um novo placar e retorna o top 10 atualizado."""
     logger.info(f"Adding score: {entry.name} - {entry.score}")
-    scores = load_scores()
-    
-    # Adiciona o novo registro
-    scores.append(entry.model_dump())
-    
-    # Ordena decrescente e filtra os top 10
-    scores = sorted(scores, key=lambda x: x["score"], reverse=True)[:10]
-    
-    # Grava no JSON
-    save_scores(scores)
-    
-    return scores
+    entry_dict = entry.model_dump()
+    save_score_to_firestore(entry_dict)
+    return get_scores()
 
 # Montagem dos arquivos estáticos do frontend.
 # Criamos a pasta estática se não existir para evitar erros ao iniciar o FastAPI
