@@ -1,6 +1,8 @@
-# 🕹️ Retro Neon Tetris — Cloud Run Arcade
+# 🕹️ Retro Neon Tetris — Cloud Run Arcade (Event-Driven CQRS Edition)
 
 Uma versão moderna, estilosa e extremamente sofisticada do clássico jogo **Tetris**, projetada com visual retro-wave/neon (Synthwave) e **Sintetizador de Áudio Procedural** nativo no navegador (usando a Web Audio API).
+
+Esta versão (Checkpoint 02) evoluiu para uma **Arquitetura Orientada a Eventos (Event-Driven) de altíssimo desempenho**, integrando **Google Cloud Pub/Sub**, **Firestore** e aplicando o padrão **CQRS (Command and Query Responsibility Segregation)** com Visão Materializada de Cache.
 
 ## 🎨 Interface do Jogo
 
@@ -8,18 +10,33 @@ Uma versão moderna, estilosa e extremamente sofisticada do clássico jogo **Tet
 
 *Visualização da interface com estilo neon synthwave, exibindo o canvas do jogo (centro), controles (esquerda), próximas peças e estatísticas (direita) com sistema de ranking integrado.*
 
-O projeto é estruturado com um backend assíncrono em **Python (FastAPI)** que gerencia a API de pontuações de recorde (High Scores) persistida em arquivo local, e serve a interface estática do jogo baseada em **HTML5 Canvas, CSS moderno e JavaScript Vanilla**.
+O projeto é estruturado com um backend assíncrono em **Python (FastAPI)** que gerencia a API de pontuações de recorde persistida no Firestore. O frontend é servido de forma estática, construído em **HTML5 Canvas, CSS moderno e JavaScript Vanilla** com **UI Otimista** para respostas instantâneas.
 
 Este aplicativo foi planejado e otimizado especificamente para rodar localmente e ser facilmente implantado de forma escalável no **Google Cloud Run (GCP)**.
 
 ---
 
 ## 🚀 Funcionalidades e Diferenciais
-*   **Sintetizador de Áudio Procedural (Web Audio API):** Som clássico de arcade gerado por código diretamente na placa de som do seu computador, dispensando carregamento de arquivos externos `.wav` ou `.mp3`. Conta com efeitos sonoros ao girar peças, limpar linhas, subir de nível e até uma trilha sonora tocada de fundo que pode ser silenciada.
-*   **Visual Neon Synthwave:** Efeitos de rastro, sombras glow brilhantes, explosão de faíscas ao limpar linhas e fundo com estrelas animadas via CSS.
+*   **Sintetizador de Áudio Procedural (Web Audio API):** Som clássico de arcade gerado por código diretamente na placa de som do seu computador, dispensando carregamento de arquivos externos `.wav` ou `.mp3`.
+*   **Interface Assíncrona Otimista (Novo):** O frontend não trava esperando o banco de dados. Os placares são inseridos na tela instantaneamente enquanto o Pub/Sub garante a gravação no fundo.
 *   **Algoritmo Bag-of-7 (Mecânica Justa):** Geração de peças igual à do Tetris oficial de campeonato, garantindo que o jogador não sofra com sequências de azar sem peças fundamentais.
 *   **Sistema de Níveis Progressivo:** O nível de dificuldade aumenta a cada 10 linhas removidas, acelerando a queda das peças de forma fluida e aplicando multiplicadores à pontuação.
-*   **Tabela de Recordes Integrada (API Cloud):** Salve suas pontuações e envie seu nome em tempo real se superar as pontuações gravadas na nuvem.
+
+---
+
+## 🏛️ Evolução Arquitetural (Fase 1 e Fase 2)
+
+O projeto original usava armazenamento local em disco, o que é incompatível com a natureza Serverless Efêmera do Cloud Run. O sistema foi refatorado nas seguintes fases:
+
+### Fase 1: Persistência Robusta
+*   **Google Cloud Firestore:** O backend foi integrado ao banco de dados NoSQL gerenciado do Google. Todos os scores recebidos são gravados de forma permanente, resolvendo o problema de perda de dados.
+
+### Fase 2: Event-Driven Architecture e CQRS
+O sistema agora separa completamente as responsabilidades de leitura (Query) e escrita (Command).
+1.  **Ingestão e Escrita (Pub/Sub):** Quando um jogador envia um placar, a API principal do FastAPI apenas publica a mensagem no tópico do **Google Cloud Pub/Sub** e responde "Sucesso" na mesma hora (absorvendo picos de tráfego).
+2.  **Processamento Assíncrono (Webhook):** A fila do Pub/Sub envia a mensagem em background (via protocolo Push) para a rota interna `/api/internal/scores-worker`.
+3.  **Geração do Cache Materializado (CQRS):** Após o worker gravar o score cru no Firestore, ele próprio processa o novo ranking ("Top 10") e salva um documento consolidado em `/cache/leaderboard`.
+4.  **Leitura Otimizada:** Quando milhares de jogadores abrem o jogo simultaneamente, a rota `GET /api/scores` lê **apenas 1 documento estático** do Firestore (o cache), reduzindo a latência a milissegundos e eliminando o custo em nuvem de queries de ordenação massivas.
 
 ---
 
@@ -27,13 +44,14 @@ Este aplicativo foi planejado e otimizado especificamente para rodar localmente 
 
 ```text
 ├── backend/
-│   ├── main.py              # Servidor FastAPI com rotas de API e arquivos estáticos
-│   └── requirements.txt     # Dependências de bibliotecas Python
+│   ├── main.py              # Servidor FastAPI com rotas de API, CQRS e Pub/Sub Webhook
+│   ├── requirements.txt     # Dependências de bibliotecas Python
+│   └── test_main.py         # Suíte de testes automatizados do backend
 ├── static/                  # Pasta com os ativos de frontend servidos pelo FastAPI
 │   ├── css/
 │   │   └── style.css        # Estilos modernos neon, grade e animações
 │   ├── js/
-│   │   ├── api.js           # Funções de chamada HTTP assíncronas para o Placar
+│   │   ├── api.js           # Funções de chamada HTTP assíncronas para o Placar (UI Otimista)
 │   │   └── game.js          # Lógica do jogo, renderização Canvas e sintetizador de som
 │   └── index.html           # Esqueleto da página e modais do jogo
 ├── Dockerfile               # Instruções de montagem da imagem Docker (Cloud Run)
@@ -52,8 +70,8 @@ Siga os passos abaixo para preparar seu ambiente Python, instalar as dependênci
 Primeiro, clone o repositório para a sua máquina local e acesse a pasta do projeto:
 
 ```bash
-git clone https://github.com/Tiago-TSG/tetris-app-checkpoint-01.git
-cd tetris-app-checkpoint-01
+git clone https://github.com/Tiago-TSG/tetris-app-checkpoint-02.git
+cd tetris-app-checkpoint-02
 ```
 
 ### Passo 2: Criar o Ambiente Virtual (`venv`)
@@ -100,6 +118,7 @@ Execute o servidor de desenvolvimento utilizando o `uvicorn`:
 ```bash
 uvicorn backend.main:app --reload --port 8080
 ```
+> **Nota de Fallback:** O código é resiliente. Se você rodar localmente sem as credenciais do Google Cloud ativadas, o sistema entrará no "Modo de Segurança" (Fallback), voltando a salvar e ler os placares em um arquivo JSON local, permitindo testes offline perfeitos.
 
 ### Passo 6: Jogar!
 Abra seu navegador e acesse:
@@ -115,8 +134,8 @@ Este projeto possui suporte a contêineres Docker, o que permite rodar toda a ap
 Primeiro, clone o repositório para a sua máquina local e acesse a pasta do projeto:
 
 ```bash
-git clone https://github.com/Tiago-TSG/tetris-app-checkpoint-01.git
-cd tetris-app-checkpoint-01
+git clone https://github.com/Tiago-TSG/tetris-app-checkpoint-02.git
+cd tetris-app-checkpoint-02
 ```
 
 ### Passo 2: Construir a Imagem Docker
@@ -147,9 +166,15 @@ O **Google Cloud Run** é um serviço totalmente gerenciado do GCP que executa c
 3. Ter um projeto criado no GCP e habilitar o faturamento (Billing) e as APIs do Cloud Build e Cloud Run.
 4. Clonar este repositório Git em sua máquina local e acessar o diretório do projeto:
    ```bash
-   git clone https://github.com/Tiago-TSG/tetris-app-checkpoint-01.git
-   cd tetris-app-checkpoint-01
+   git clone https://github.com/Tiago-TSG/tetris-app-checkpoint-02.git
+   cd tetris-app-checkpoint-02
    ```
+
+### 1. Criar o Tópico do Pub/Sub
+Para a arquitetura Event-Driven funcionar, crie o tópico de mensageria que será usado pela aplicação:
+```bash
+gcloud pubsub topics create scores-topic
+```
 
 ---
 
@@ -178,7 +203,16 @@ A forma mais rápida e simples de fazer o deploy no Cloud Run é usando o build 
     
     *(Você pode alterar a região se desejar, como `southamerica-east1` para o Brasil).*
 
-4.  Ao final do processo, a CLI do gcloud exibirá a **URL pública do jogo** (ex: `https://tetris-app-xxxxx-us-central1.run.app`) no serviço "Cloud Run". Basta abrir no navegador e jogar!
+4.  Ao final do processo, a CLI do gcloud exibirá a **URL pública do jogo** (ex: `https://tetris-app-xxxxx-us-central1.run.app`) no serviço "Cloud Run".
+
+### Configurar a Assinatura de Push (Webhook)
+Para fechar o ciclo do Pub/Sub, vincule o tópico ao Webhook da sua aplicação, substituindo a URL abaixo pela URL gerada no passo anterior:
+```bash
+gcloud pubsub subscriptions create scores-topic-sub \
+  --topic=scores-topic \
+  --push-endpoint=https://SUA_URL_DO_CLOUD_RUN.a.run.app/api/internal/scores-worker \
+  --ack-deadline=10
+```
 
 ---
 
@@ -207,6 +241,8 @@ Se você preferir construir a imagem manualmente e enviá-la para um repositóri
       --allow-unauthenticated
     ```
 
+*(Lembre-se de configurar a Assinatura de Push descrita acima após este tipo de deploy também).*
+
 ---
 
 ## 🎮 Controles do Jogo
@@ -219,8 +255,5 @@ Se você preferir construir a imagem manualmente e enviá-la para um repositóri
 
 ---
 
-## 🔒 Persistência de Dados (Scores) no Cloud Run
-Como o Cloud Run funciona sob arquitetura **Serverless Efêmera**, instâncias do contêiner podem ser recicladas, pausadas ou escaladas para zero. 
-Nesta configuração padrão, o placar é salvo em um arquivo de texto local chamado `scores.json` dentro do contêiner. Isso significa que se o Cloud Run reduzir as instâncias para zero, o placar retornará aos recordes padrão do jogo (Neon Arcade Master).
-
-*Para uma persistência 100% duradoura em produção na nuvem, você pode facilmente adaptar a função `load_scores` e `save_scores` no arquivo `backend/main.py` para ler e gravar dados em um banco NoSQL gerenciado como o **Google Cloud Firestore**, sem necessidade de alterar o frontend ou as lógicas de jogo.*
+## 🔒 Persistência de Dados (Scores)
+Nesta nova arquitetura (Fase 1 e Fase 2), a persistência de dados efêmera baseada em arquivo local foi completamente substituída em ambiente de produção pelo banco de dados **Google Cloud Firestore**. As pontuações são armazenadas permanentemente e servidas via Cache Materializado, garantindo alta disponibilidade e durabilidade sem impacto na escalabilidade do Cloud Run.
