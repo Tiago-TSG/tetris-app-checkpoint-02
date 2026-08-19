@@ -617,3 +617,60 @@ body {
         font-size: 2rem;
     }
 }
+
+/* =======================================================
+   Fase 2: Mensageria Assíncrona e Notificações (Pub/Sub)
+   ======================================================= */
+
+/* Efeito de pulsar neon para scores enviando em background */
+.scores-list li.syncing-score {
+    background: rgba(57, 255, 20, 0.12) !important;
+    border: 1px dashed var(--neon-green) !important;
+    border-radius: 4px;
+    animation: neonGreenPulse 1s infinite alternate;
+}
+
+@keyframes neonGreenPulse {
+    0% {
+        box-shadow: 0 0 2px rgba(57, 255, 20, 0.1);
+    }
+    100% {
+        box-shadow: 0 0 12px rgba(57, 255, 20, 0.5), inset 0 0 4px rgba(57, 255, 20, 0.15);
+    }
+}
+
+/* Status de Notificação Inline do Pub/Sub no Modal */
+.pubsub-status {
+    font-size: 8px; /* Fonte pequena estilo arcade */
+    margin: 0;
+    font-weight: bold;
+    text-align: center;
+    letter-spacing: 1px;
+    padding: 8px;
+    border-radius: 4px;
+    
+    /* FORÇAR LARGURA IDÊNTICA AO INPUT */
+    width: 80%;
+    min-width: 80%;
+    max-width: 80%;
+    box-sizing: border-box;
+    align-self: center;
+    
+    text-transform: uppercase;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+}
+
+.pubsub-status.info {
+    color: var(--neon-blue);
+    text-shadow: 0 0 5px var(--neon-blue);
+    border: 1px dashed var(--neon-blue);
+    background: rgba(0, 240, 255, 0.05);
+}
+
+.pubsub-status.success {
+    color: var(--neon-green);
+    text-shadow: 0 0 5px var(--neon-green);
+    border: 1px dashed var(--neon-green);
+    background: rgba(57, 255, 20, 0.05);
+}

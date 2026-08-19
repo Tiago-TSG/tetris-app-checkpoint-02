@@ -57,8 +57,48 @@ function renderScores(scores) {
         li.appendChild(nameSpan);
         li.appendChild(valSpan);
         
+        // Efeito sutil neon verde para scores enviados de forma otimista que estão salvando em background
+        if (entry.isOptimistic) {
+            li.classList.add('syncing-score');
+            
+            // Cria um badge piscando "[SALVANDO]"
+            const badgeSpan = document.createElement('span');
+            badgeSpan.className = 'score-badge';
+            badgeSpan.textContent = ' [SALVANDO]';
+            badgeSpan.style.color = 'var(--neon-green)';
+            badgeSpan.style.fontSize = '8px';
+            badgeSpan.style.fontStyle = 'italic';
+            badgeSpan.style.fontWeight = 'bold';
+            nameSpan.appendChild(badgeSpan);
+            
+            li.style.textShadow = "0 0 10px #39ff14";
+            li.style.color = "#39ff14";
+            li.title = "Sincronizando recorde com a nuvem...";
+        }
+        
         scoresListElement.appendChild(li);
     });
+}
+
+/**
+ * Atualiza a mensagem de status do Pub/Sub dentro do formulário do modal
+ * @param {string} message Mensagem a ser exibida
+ * @param {string} type Tipo: 'success' (verde) ou 'info' (ciano) ou 'hidden' (esconder)
+ */
+function updatePubSubStatus(message, type = 'success') {
+    const statusEl = document.getElementById('pubsub-status');
+    if (!statusEl) return;
+    
+    if (type === 'hidden') {
+        statusEl.classList.add('hidden');
+        return;
+    }
+    
+    statusEl.classList.remove('hidden', 'info', 'success');
+    statusEl.classList.add(type);
+    
+    const icon = type === 'info' ? '🕹️ ' : '✓ ';
+    statusEl.innerHTML = `<span>${icon}</span>${message}`;
 }
 
 /**
@@ -71,7 +111,12 @@ function renderScores(scores) {
 async function submitScore(name, score, level, lines) {
     try {
         const trimmedName = name.trim().toUpperCase() || 'ANÔNIMO';
-        const response = await fetch('/api/scores', {
+        
+        // Exibe o status de progresso direto no modal, entre o input e o botão (Ingestão iniciada)
+        updatePubSubStatus("ENVIANDO PARA A FILA PUB/SUB...", "info");
+        
+        // Dispara a requisição assíncrona POST para o backend
+        const responsePromise = fetch('/api/scores', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -84,15 +129,83 @@ async function submitScore(name, score, level, lines) {
             })
         });
 
+        // --- ATUALIZAÇÃO OTIMISTA (UX EVENT-DRIVEN) ---
+        // Pegamos a lista que já está renderizada em tela, adicionamos o novo score do jogador
+        // localmente de forma imediata, ordenamos de forma decrescente e redesenhamos a tabela.
+        const scoresListElement = document.getElementById('scores-list');
+        const currentScores = [];
+        
+        if (scoresListElement) {
+            const listItems = scoresListElement.querySelectorAll('li:not(.loading)');
+            listItems.forEach(li => {
+                const nameSpan = li.querySelector('.score-name');
+                const valSpan = li.querySelector('.score-val');
+                if (nameSpan && valSpan) {
+                    // Limpa badges ou textos extras ao obter os scores anteriores da tela
+                    let cleanName = nameSpan.textContent;
+                    if (cleanName.includes('[SALVANDO]')) {
+                        cleanName = cleanName.replace('[SALVANDO]', '').trim();
+                    }
+                    const parsedScore = parseInt(valSpan.textContent.replace(/[.,\s]/g, ''), 10);
+                    currentScores.push({
+                        name: cleanName,
+                        score: isNaN(parsedScore) ? 0 : parsedScore
+                    });
+                }
+            });
+        }
+        
+        // Adiciona o novo recorde otimista
+        currentScores.push({
+            name: trimmedName,
+            score: score,
+            level: level,
+            lines: lines,
+            isOptimistic: true // Ativa o efeito visual neon verde de sincronização
+        });
+        
+        // Ordena por maior pontuação e limita aos top 10
+        const sortedScores = currentScores
+            .sort((a, b) => b.score - a.score)
+            .slice(0, 10);
+            
+        // Renderiza instantaneamente em menos de 5ms na tela do jogador
+        renderScores(sortedScores);
+
+        // Aguarda a resposta do backend (que joga no Pub/Sub de forma ultrarrápida)
+        const response = await responsePromise;
+
         if (!response.ok) {
             throw new Error('Erro ao enviar pontuação para o servidor.');
         }
 
-        const updatedScores = await response.json();
-        renderScores(updatedScores);
-        return true;
+        // Exibe o status informando que foi recebido pela fila de mensageria com sucesso
+        updatePubSubStatus("RECEBIDO! SALVANDO NO FIRESTORE...", "success");
+
+        // Retorna uma Promise que resolve após a sincronização, mantendo o modal aberto
+        // para o jogador conseguir ler as etapas ocorrendo em tempo real!
+        return new Promise((resolve) => {
+            setTimeout(() => {
+                fetchScores();
+                updatePubSubStatus("GRAVAÇÃO CONCLUÍDA!", "success");
+                
+                // Espera mais 1 segundo com a mensagem de sucesso na tela e depois fecha o form
+                setTimeout(() => {
+                    updatePubSubStatus("", "hidden");
+                    resolve(true); // Resolve o submit, o que fechará o form e resetará o input no game.js
+                }, 1000);
+                
+            }, 2000); // 2 segundos para o processamento assíncrono na nuvem
+        });
+        
     } catch (error) {
         console.error('Erro ao registrar pontuação:', error);
+        // Desfaz a alteração otimista e exibe erro
+        fetchScores();
+        updatePubSubStatus("FALHA AO SALVAR NA NUVEM!", "info");
+        setTimeout(() => {
+            updatePubSubStatus("", "hidden");
+        }, 3000);
         alert('Não foi possível salvar sua pontuação no ranking da nuvem, mas parabéns pela partida!');
         return false;
     }

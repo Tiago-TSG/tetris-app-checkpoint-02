@@ -1,5 +1,6 @@
 import os
 import json
+import base64
 import logging
 from typing import List, Dict, Any
 from fastapi import FastAPI, HTTPException
@@ -15,12 +16,17 @@ app = FastAPI(title="Sophisticated Tetris Backend")
 # Caminho para arquivo de scores (usado como fallback local)
 SCORES_FILE = os.getenv("SCORES_FILE_PATH", "scores.json")
 COLLECTION_NAME = "scores"
+TOPIC_NAME = "scores-topic"
 
 class ScoreEntry(BaseModel):
     name: str = Field(..., min_length=1, max_length=15)
     score: int = Field(..., ge=0)
     level: int = Field(..., ge=1)
     lines: int = Field(..., ge=0)
+
+class PubSubPushPayload(BaseModel):
+    message: dict
+    subscription: str
 
 # Scores padrão para inicializar o placar com estilo arcade retro
 DEFAULT_SCORES = [
@@ -44,6 +50,26 @@ try:
 except Exception as e:
     logger.warning(f"Could not initialize Firestore Client: {e}. Falling back to local JSON storage.")
     db = None
+
+# Inicializa o Pub/Sub de forma segura (Publisher)
+publisher = None
+topic_path = None
+try:
+    from google.cloud import pubsub_v1
+    pub_project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
+    publisher = pubsub_v1.PublisherClient()
+    
+    # Se conseguirmos obter o projeto (seja da env ou resolvido pelo cliente)
+    if pub_project_id or getattr(publisher, "project", None):
+        resolved_project = pub_project_id or publisher.project
+        topic_path = publisher.topic_path(resolved_project, TOPIC_NAME)
+        logger.info(f"Pub/Sub Publisher client successfully initialized. Topic path: {topic_path}")
+    else:
+        logger.warning("Could not auto-detect GCP project for Pub/Sub. Falling back to direct database writes.")
+        publisher = None
+except Exception as e:
+    logger.warning(f"Could not initialize Pub/Sub Publisher Client: {e}. Falling back to direct database writes.")
+    publisher = None
 
 def load_scores_local() -> List[Dict[str, Any]]:
     if not os.path.exists(SCORES_FILE):
@@ -120,6 +146,24 @@ def save_score_to_firestore(entry: Dict[str, Any]) -> None:
         except Exception as local_err:
             logger.error(f"Failed to save to local fallback: {local_err}")
 
+def publish_score_to_pubsub(entry: Dict[str, Any]) -> bool:
+    if publisher is None or topic_path is None:
+        logger.info("Pub/Sub client not active. Fallback: direct write to Firestore/local.")
+        save_score_to_firestore(entry)
+        return False
+    try:
+        # Serializar dicionário para string JSON e codificar em bytes
+        data_bytes = json.dumps(entry).encode("utf-8")
+        # Publicar no Pub/Sub
+        future = publisher.publish(topic_path, data_bytes)
+        message_id = future.result()
+        logger.info(f"Score for {entry['name']} successfully published to Pub/Sub. Message ID: {message_id}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to publish to Pub/Sub: {e}. Fallback: direct write.")
+        save_score_to_firestore(entry)
+        return False
+
 @app.get("/api/scores", response_model=List[Dict[str, Any]])
 def get_scores():
     """Recupera os 10 melhores placares."""
@@ -130,11 +174,40 @@ def get_scores():
 
 @app.post("/api/scores", response_model=List[Dict[str, Any]])
 def add_score(entry: ScoreEntry):
-    """Adiciona um novo placar e retorna o top 10 atualizado."""
+    """Adiciona um novo placar. Publica no Pub/Sub de forma assíncrona se disponível."""
     logger.info(f"Adding score: {entry.name} - {entry.score}")
     entry_dict = entry.model_dump()
-    save_score_to_firestore(entry_dict)
+    publish_score_to_pubsub(entry_dict)
     return get_scores()
+
+@app.post("/api/internal/scores-worker")
+def pubsub_push_receiver(payload: PubSubPushPayload):
+    """Gatilho Push do Pub/Sub que recebe mensagens assíncronas e grava no Firestore."""
+    try:
+        # Extrair dados da mensagem
+        message_data = payload.message.get("data")
+        if not message_data:
+            raise HTTPException(status_code=400, detail="Invalid Pub/Sub message: missing 'data'")
+            
+        # Decodificar de base64 para string UTF-8
+        decoded_bytes = base64.b64decode(message_data)
+        decoded_str = decoded_bytes.decode("utf-8")
+        
+        # Converter a string em dicionário JSON
+        entry_dict = json.loads(decoded_str)
+        logger.info(f"Pub/Sub Push received message: {entry_dict}")
+        
+        # Validar dados usando o modelo de entrada
+        validated_entry = ScoreEntry(**entry_dict)
+        
+        # Gravar no Firestore (ou fallback local se db for None)
+        save_score_to_firestore(validated_entry.model_dump())
+        
+        return {"status": "success", "message": "Score successfully persisted via Pub/Sub"}
+    except Exception as e:
+        logger.error(f"Error processing Pub/Sub Push message: {e}")
+        # Retorna erro 500 para o Pub/Sub saber que deve tentar novamente (retry)
+        raise HTTPException(status_code=500, detail=f"Failed to process message: {str(e)}")
 
 # Montagem dos arquivos estáticos do frontend.
 # Criamos a pasta estática se não existir para evitar erros ao iniciar o FastAPI
