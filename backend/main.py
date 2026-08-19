@@ -123,6 +123,23 @@ def load_scores_from_firestore() -> List[Dict[str, Any]]:
         logger.error(f"Error loading scores from Firestore: {e}. Falling back to local file.")
         return load_scores_local()
 
+def update_leaderboard_cache_sync():
+    """Atualiza o cache materializado do Top 10 diretamente do backend."""
+    if db is None:
+        return
+    try:
+        logger.info("Atualizando cache do leaderboard (CQRS interno)...")
+        scores_ref = db.collection(COLLECTION_NAME)
+        query = scores_ref.order_by("score", direction=firestore.Query.DESCENDING).limit(10)
+        
+        top_scores = [doc.to_dict() for doc in query.stream()]
+        
+        cache_ref = db.collection("cache").document("leaderboard")
+        cache_ref.set({"top_10": top_scores})
+        logger.info(f"Cache atualizado com sucesso! Total: {len(top_scores)}")
+    except Exception as e:
+        logger.error(f"Erro ao atualizar o cache internamente: {e}")
+
 def save_score_to_firestore(entry: Dict[str, Any]) -> None:
     if db is None:
         # Se estiver no modo local, adiciona o score na lista local e salva
@@ -135,6 +152,8 @@ def save_score_to_firestore(entry: Dict[str, Any]) -> None:
         col_ref = db.collection(COLLECTION_NAME)
         col_ref.add(entry)
         logger.info(f"Score for {entry['name']} successfully saved to Firestore.")
+        # Atualiza o cache do ranking imediatamente após salvar o score
+        update_leaderboard_cache_sync()
     except Exception as e:
         logger.error(f"Error saving score to Firestore: {e}. Saving to local fallback.")
         # Em caso de erro temporário no Firestore, salva local também
@@ -166,11 +185,31 @@ def publish_score_to_pubsub(entry: Dict[str, Any]) -> bool:
 
 @app.get("/api/scores", response_model=List[Dict[str, Any]])
 def get_scores():
-    """Recupera os 10 melhores placares."""
-    scores = load_scores_from_firestore()
-    # Garante a ordenação decrescente e corta nos top 10
-    scores = sorted(scores, key=lambda x: x["score"], reverse=True)[:10]
-    return scores
+    """
+    Recupera os 10 melhores placares usando Cache Materializado.
+    Lê apenas um documento estático gerado pela Cloud Function (Trigger).
+    """
+    if db:
+        try:
+            # Leitura Otimizada: 1 única leitura de documento em vez de query na coleção
+            cache_doc = db.collection("cache").document("leaderboard").get()
+            
+            if cache_doc.exists:
+                logger.info("Retornando scores do cache otimizado.")
+                return cache_doc.to_dict().get("top_10", [])
+            else:
+                logger.warning("Cache não encontrado. Fazendo fallback para query pesada e leitura local.")
+                # Fallback caso a Cloud Function ainda não tenha criado o cache
+                scores = load_scores_from_firestore()
+                return sorted(scores, key=lambda x: x["score"], reverse=True)[:10]
+                
+        except Exception as e:
+            logger.error(f"Erro ao ler do cache do Firestore: {e}")
+            scores = load_scores_from_firestore()
+            return sorted(scores, key=lambda x: x["score"], reverse=True)[:10]
+    else:
+        scores = load_scores_local()
+        return sorted(scores, key=lambda x: x["score"], reverse=True)[:10]
 
 @app.post("/api/scores", response_model=List[Dict[str, Any]])
 def add_score(entry: ScoreEntry):
