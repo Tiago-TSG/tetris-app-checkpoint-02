@@ -617,6 +617,13 @@ class GameEngine {
         if (clearedCount > 0) {
             this.lines += clearedCount;
             
+            // Fase 3: Telemetria de Linhas Limpas
+            sendTelemetry('line_clear', clearedCount);
+            if (clearedCount === 4) {
+                sendTelemetry('tetris_clear', 1);
+                this.showFloatingEvent('TETRIS!', 'tetris');
+            }
+            
             // Sistema de Pontuação Clássico Multiplicado pelo Nível
             const scoreMultiplier = [0, 100, 300, 500, 800];
             this.score += scoreMultiplier[clearedCount] * this.level;
@@ -627,12 +634,36 @@ class GameEngine {
                 this.level = newLevel;
                 audio.playLevelUp();
                 this.updateInterval();
+                // Fase 3: Telemetria de Nível
+                sendTelemetry('level_up', this.level);
+                this.showFloatingEvent(`LEVEL UP!`, 'levelup');
             } else {
                 audio.playLineClear(clearedCount);
             }
             
+            // Fase 3: Verifica se desbloqueou conquistas
+            setTimeout(() => fetchAndShowAchievements(), 500);
+            
             this.updateStatsDisplay();
         }
+    }
+
+    showFloatingEvent(text, cssClass) {
+        const container = document.getElementById('game-events-container');
+        if (!container) return;
+        
+        const el = document.createElement('div');
+        el.className = `floating-event ${cssClass}`;
+        el.textContent = text;
+        
+        container.appendChild(el);
+        
+        // Remove após a animação (2.5s)
+        setTimeout(() => {
+            if (container.contains(el)) {
+                container.removeChild(el);
+            }
+        }, 3000);
     }
 
     createSparksEffect(rowY) {

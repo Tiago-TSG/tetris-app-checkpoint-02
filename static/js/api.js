@@ -49,6 +49,29 @@ function renderScores(scores) {
         nameSpan.className = 'score-name';
         nameSpan.textContent = entry.name.toUpperCase();
         
+        const badgeContainer = document.createElement('span');
+        badgeContainer.className = 'achievement-badge-container';
+        badgeContainer.id = `badge-container-${index}`;
+        nameSpan.appendChild(badgeContainer);
+        
+        // Fetch assíncrono das badges do jogador para exibir no ranking
+        fetch(`/api/achievements/${entry.name.toUpperCase()}`)
+            .then(res => res.json())
+            .then(data => {
+                const badges = data.badges || [];
+                badges.forEach(b => {
+                    const info = BADGES_MAP[b];
+                    if (info) {
+                        const iconSpan = document.createElement('span');
+                        iconSpan.className = 'achievement-badge-icon';
+                        iconSpan.textContent = info.icon;
+                        iconSpan.title = info.label;
+                        badgeContainer.appendChild(iconSpan);
+                    }
+                });
+            })
+            .catch(() => {});
+        
         const valSpan = document.createElement('span');
         valSpan.className = 'score-val';
         valSpan.textContent = entry.score.toLocaleString();
@@ -102,6 +125,91 @@ function updatePubSubStatus(message, type = 'success') {
 }
 
 /**
+ * Gerencia a sessão única do jogador
+ */
+function getSessionId() {
+    let sid = sessionStorage.getItem('tetris_session_id');
+    if (!sid) {
+        sid = 'PLAYER-' + Math.random().toString(36).substring(2, 9).toUpperCase();
+        sessionStorage.setItem('tetris_session_id', sid);
+    }
+    return sid;
+}
+
+/**
+ * Envia eventos de telemetria em tempo real
+ */
+function sendTelemetry(eventType, value) {
+    fetch('/api/telemetry', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            session_id: getSessionId(),
+            event_type: eventType,
+            value: value
+        })
+    }).catch(e => console.warn('Falha na telemetria:', e));
+}
+
+const BADGES_MAP = {
+    "level_3": { icon: "🥉", label: "Novato Neon" },
+    "level_7": { icon: "🥈", label: "Piloto de Fuga" },
+    "level_10": { icon: "🥇", label: "Deus do Arcade" },
+    "lines_50": { icon: "🥉", label: "Operador da Grade" },
+    "lines_200": { icon: "🥈", label: "Hacker de Sistemas" },
+    "lines_500": { icon: "🥇", label: "Lenda Synthwave" },
+    "tetris_1": { icon: "🥉", label: "Golpe Perfeito" },
+    "tetris_10": { icon: "🥈", label: "Combo Matrix" },
+    "tetris_50": { icon: "🥇", label: "Arquiteto de Blocos" }
+};
+
+let knownBadges = [];
+
+async function fetchAndShowAchievements() {
+    try {
+        const response = await fetch(`/api/achievements/${getSessionId()}`);
+        if (response.ok) {
+            const data = await response.json();
+            const badges = data.badges || [];
+            
+            const newBadges = badges.filter(b => !knownBadges.includes(b));
+            if (newBadges.length > 0) {
+                knownBadges = badges;
+                showAchievementToast(newBadges);
+            }
+        }
+    } catch (e) {
+        console.warn('Erro ao buscar conquistas', e);
+    }
+}
+
+function showAchievementToast(newBadgeIds) {
+    const container = document.getElementById('game-events-container');
+    if (!container) return;
+    
+    // Mostra o último desbloqueado
+    const latestBadgeId = newBadgeIds[newBadgeIds.length - 1];
+    const badgeInfo = BADGES_MAP[latestBadgeId];
+    
+    if (badgeInfo) {
+        const el = document.createElement('div');
+        el.className = 'floating-event achievement';
+        el.innerHTML = `
+            <span class="achievement-title">CONQUISTA!</span>
+            <strong>${badgeInfo.icon} ${badgeInfo.label}</strong>
+        `;
+        container.appendChild(el);
+        
+        // Remove após a animação (4s)
+        setTimeout(() => {
+            if (container.contains(el)) {
+                container.removeChild(el);
+            }
+        }, 4000);
+    }
+}
+
+/**
  * Envia uma nova pontuação de recorde para o backend
  * @param {string} name Nome do jogador
  * @param {number} score Pontuação total
@@ -125,7 +233,8 @@ async function submitScore(name, score, level, lines) {
                 name: trimmedName,
                 score: score,
                 level: level,
-                lines: lines
+                lines: lines,
+                session_id: getSessionId()
             })
         });
 
