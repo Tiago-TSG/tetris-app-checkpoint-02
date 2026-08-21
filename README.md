@@ -10,7 +10,7 @@ Esta versão (Checkpoint 02) evoluiu para uma **Arquitetura Orientada a Eventos 
 
 *Visualização da interface com estilo neon synthwave, exibindo o canvas do jogo (centro), controles (esquerda), próximas peças e estatísticas (direita) com sistema de ranking integrado.*
 
-O projeto é estruturado com um backend assíncrono em **Python (FastAPI)** que gerencia a API de pontuações de recorde persistida no Firestore. O frontend é servido de forma estática, construído em **HTML5 Canvas, CSS moderno e JavaScript Vanilla** com **UI Otimista** para respostas instantâneas.
+O projeto é estruturado com um backend assíncrono em **Python (FastAPI)** que gerencia a API de pontuações de recorde persistida no Firestore. O frontend é servido de forma estática, construído em **HTML5 Canvas, CSS moderno e JavaScript Vanilla** com **UI Otimista** para respostas instantâneas e **Feedback Visual de Conquistas**.
 
 Este aplicativo foi planejado e otimizado especificamente para rodar localmente e ser facilmente implantado de forma escalável no **Google Cloud Run (GCP)**.
 
@@ -19,12 +19,13 @@ Este aplicativo foi planejado e otimizado especificamente para rodar localmente 
 ## 🚀 Funcionalidades e Diferenciais
 *   **Sintetizador de Áudio Procedural (Web Audio API):** Som clássico de arcade gerado por código diretamente na placa de som do seu computador, dispensando carregamento de arquivos externos `.wav` ou `.mp3`.
 *   **Interface Assíncrona Otimista (Novo):** O frontend não trava esperando o banco de dados. Os placares são inseridos na tela instantaneamente enquanto o Pub/Sub garante a gravação no fundo.
+*   **Telemetria em Tempo Real e Conquistas (Novo):** O jogo captura eventos de "Level Up", "Tetris" e "Linhas Limpas" em tempo real, desbloqueando **Badges (Troféus)** que aparecem brilhando no meio da tela e ficam gravados ao lado do seu nome no Ranking mundial.
 *   **Algoritmo Bag-of-7 (Mecânica Justa):** Geração de peças igual à do Tetris oficial de campeonato, garantindo que o jogador não sofra com sequências de azar sem peças fundamentais.
 *   **Sistema de Níveis Progressivo:** O nível de dificuldade aumenta a cada 10 linhas removidas, acelerando a queda das peças de forma fluida e aplicando multiplicadores à pontuação.
 
 ---
 
-## 🏛️ Evolução Arquitetural (Fase 1 e Fase 2)
+## 🏛️ Evolução Arquitetural (Fase 1, 2 e 3)
 
 O projeto original usava armazenamento local em disco, o que é incompatível com a natureza Serverless Efêmera do Cloud Run. O sistema foi refatorado nas seguintes fases:
 
@@ -37,6 +38,12 @@ O sistema agora separa completamente as responsabilidades de leitura (Query) e e
 2.  **Processamento Assíncrono (Webhook):** A fila do Pub/Sub envia a mensagem em background (via protocolo Push) para a rota interna `/api/internal/scores-worker`.
 3.  **Geração do Cache Materializado (CQRS):** Após o worker gravar o score cru no Firestore, ele próprio processa o novo ranking ("Top 10") e salva um documento consolidado em `/cache/leaderboard`.
 4.  **Leitura Otimizada:** Quando milhares de jogadores abrem o jogo simultaneamente, a rota `GET /api/scores` lê **apenas 1 documento estático** do Firestore (o cache), reduzindo a latência a milissegundos e eliminando o custo em nuvem de queries de ordenação massivas.
+
+### Fase 3: Telemetria e Padrão Fan-out (Coreografia)
+A arquitetura foi expandida para suportar monitoramento de eventos ao vivo durante a partida.
+1.  **Emissão de Eventos (Frontend):** O `game.js` dispara pacotes silenciosos para a API sempre que o jogador sobe de nível ou faz um Tetris.
+2.  **Barramento de Mensageria:** A API despacha esses eventos para um segundo tópico do Pub/Sub (`telemetry-topic`).
+3.  **Coreografia Autônoma:** Um Webhook secundário (`/api/internal/telemetry-worker`) ouve a fila, atualiza os contadores globais do jogador e roda o "Motor de Regras" para conceder medalhas na coleção `achievements`, de forma totalmente desacoplada do salvamento principal de scores.
 
 ---
 
@@ -170,10 +177,11 @@ O **Google Cloud Run** é um serviço totalmente gerenciado do GCP que executa c
    cd tetris-app-checkpoint-02
    ```
 
-### 1. Criar o Tópico do Pub/Sub
-Para a arquitetura Event-Driven funcionar, crie o tópico de mensageria que será usado pela aplicação:
+### 1. Criar os Tópicos do Pub/Sub
+Para a arquitetura de Mensageria e Telemetria funcionar, crie os tópicos necessários:
 ```bash
 gcloud pubsub topics create scores-topic
+gcloud pubsub topics create telemetry-topic
 ```
 
 ---
@@ -205,12 +213,22 @@ A forma mais rápida e simples de fazer o deploy no Cloud Run é usando o build 
 
 4.  Ao final do processo, a CLI do gcloud exibirá a **URL pública do jogo** (ex: `https://tetris-app-xxxxx-us-central1.run.app`) no serviço "Cloud Run".
 
-### Configurar a Assinatura de Push (Webhook)
-Para fechar o ciclo do Pub/Sub, vincule o tópico ao Webhook da sua aplicação, substituindo a URL abaixo pela URL gerada no passo anterior:
+### 2. Configurar as Assinaturas de Push (Webhooks)
+Para fechar o ciclo do Pub/Sub, vincule os tópicos criados aos Webhooks da sua aplicação, substituindo a URL abaixo pela URL gerada no passo anterior:
+
+**Assinatura de Scores e Cache:**
 ```bash
 gcloud pubsub subscriptions create scores-topic-sub \
   --topic=scores-topic \
   --push-endpoint=https://SUA_URL_DO_CLOUD_RUN.a.run.app/api/internal/scores-worker \
+  --ack-deadline=10
+```
+
+**Assinatura de Telemetria e Badges:**
+```bash
+gcloud pubsub subscriptions create telemetry-topic-sub \
+  --topic=telemetry-topic \
+  --push-endpoint=https://SUA_URL_DO_CLOUD_RUN.a.run.app/api/internal/telemetry-worker \
   --ack-deadline=10
 ```
 
@@ -241,7 +259,7 @@ Se você preferir construir a imagem manualmente e enviá-la para um repositóri
       --allow-unauthenticated
     ```
 
-*(Lembre-se de configurar a Assinatura de Push descrita acima após este tipo de deploy também).*
+*(Lembre-se de configurar as Assinaturas de Push descritas acima após este tipo de deploy também).*
 
 ---
 
@@ -255,5 +273,8 @@ Se você preferir construir a imagem manualmente e enviá-la para um repositóri
 
 ---
 
-## 🔒 Persistência de Dados (Scores)
-Nesta nova arquitetura (Fase 1 e Fase 2), a persistência de dados efêmera baseada em arquivo local foi completamente substituída em ambiente de produção pelo banco de dados **Google Cloud Firestore**. As pontuações são armazenadas permanentemente e servidas via Cache Materializado, garantindo alta disponibilidade e durabilidade sem impacto na escalabilidade do Cloud Run.
+## 🔒 Persistência de Dados (Scores e Conquistas)
+Nesta nova arquitetura (Fases 1, 2 e 3), a persistência de dados efêmera baseada em arquivo local foi completamente substituída em ambiente de produção pelo banco de dados **Google Cloud Firestore**. 
+
+- **Scores (Leaderboard):** As pontuações são armazenadas permanentemente na coleção `scores` e servidas via Cache Materializado, garantindo alta disponibilidade e durabilidade sem impacto na escalabilidade do Cloud Run.
+- **Conquistas (Badges):** A telemetria de jogo em tempo real alimenta a coleção `achievements`, que consolida métricas globais e troféus desbloqueados de forma individual para cada jogador de forma totalmente assíncrona.
