@@ -149,14 +149,14 @@ cd tetris-app-checkpoint-02
 No diretório raiz (onde está o arquivo `Dockerfile`), construa a imagem executando:
 
 ```bash
-docker build -t tetris-app .
+docker build -t tetris-app-checkpoint-02 .
 ```
 
 ### Passo 3: Executar o Contêiner Localmente
 Inicialize o contêiner mapeando a porta interna `8080` para a porta `8080` do seu computador local:
 
 ```bash
-docker run -p 8080:8080 tetris-app
+docker run -p 8080:8080 tetris-app-checkpoint-02
 ```
 
 Acesse o jogo no navegador através do endereço local **`http://localhost:8080`**.
@@ -201,7 +201,7 @@ A forma mais rápida e simples de fazer o deploy no Cloud Run é usando o build 
 
 3.  Execute o comando de deploy. Ele criará a imagem e a colocará em execução:
     ```bash
-    gcloud run deploy tetris-app \
+    gcloud run deploy tetris-app-checkpoint-02 \
       --source . \
       --region us-central1 \
       --allow-unauthenticated
@@ -211,7 +211,7 @@ A forma mais rápida e simples de fazer o deploy no Cloud Run é usando o build 
     
     *(Você pode alterar a região se desejar, como `southamerica-east1` para o Brasil).*
 
-4.  Ao final do processo, a CLI do gcloud exibirá a **URL pública do jogo** (ex: `https://tetris-app-xxxxx-us-central1.run.app`) no serviço "Cloud Run".
+4.  Ao final do processo, a CLI do gcloud exibirá a **URL pública do jogo** (ex: `https://tetris-app-checkpoint-02-xxxxx-us-central1.run.app`) no serviço "Cloud Run".
 
 ### 2. Configurar as Assinaturas de Push (Webhooks)
 Para fechar o ciclo do Pub/Sub, vincule os tópicos criados aos Webhooks da sua aplicação, substituindo a URL abaixo pela URL gerada no passo anterior:
@@ -248,13 +248,13 @@ Se você preferir construir a imagem manualmente e enviá-la para um repositóri
 2.  **Construir a imagem e enviá-la para o GCP via Cloud Build:**
     Substitua `PROJECT_ID` pelo ID real do seu projeto.
     ```bash
-    gcloud builds submit --tag us-central1-docker.pkg.dev/PROJECT_ID/neon-arcade-repo/tetris-app:latest .
+    gcloud builds submit --tag us-central1-docker.pkg.dev/PROJECT_ID/neon-arcade-repo/tetris-app-checkpoint-02:latest .
     ```
 
 3.  **Realizar o deploy do container armazenado no registro para o Cloud Run:**
     ```bash
     gcloud run deploy retro-neon-tetris \
-      --image us-central1-docker.pkg.dev/PROJECT_ID/neon-arcade-repo/tetris-app:latest \
+      --image us-central1-docker.pkg.dev/PROJECT_ID/neon-arcade-repo/tetris-app-checkpoint-02:latest \
       --region us-central1 \
       --allow-unauthenticated
     ```
